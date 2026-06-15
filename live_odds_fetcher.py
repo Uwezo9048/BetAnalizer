@@ -17,6 +17,7 @@ import threading
 import time
 from datetime import datetime
 
+import requests
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -90,6 +91,15 @@ SUPPORTED_SPORTS = {
     "counter_strike": {"name": "Counter-Strike", "icon": "CS", "live_feed": False},
     "dota_2": {"name": "Dota 2", "icon": "D2", "live_feed": False},
     "league_of_legends": {"name": "League of Legends", "icon": "LL", "live_feed": False},
+}
+
+SPORTYBET_CURRENT_SPORT_IDS = {
+    "football": "sr:sport:1",
+    "basketball": "sr:sport:2",
+    "tennis": "sr:sport:5",
+    "volleyball": "sr:sport:23",
+    "icehockey": "sr:sport:4",
+    "darts": "sr:sport:22",
 }
 
 # Try to import OddsAfrica-API
@@ -188,6 +198,12 @@ class LiveOddsFetcher:
             return self._get_fallback_data(site_id, sport)
         
         try:
+            if site_id == "sportybet":
+                current_matches = self._fetch_current_sportybet_odds(sport)
+                if current_matches:
+                    self.cache[cache_key] = (time.time(), current_matches)
+                    return current_matches
+
             api_instance = API_INSTANCES[site_id]
             raw_data = self._run_with_timeout(api_instance.Get_games, sport)
             
@@ -215,6 +231,122 @@ class LiveOddsFetcher:
             fallback_data = stored_matches or self._get_fallback_data(site_id, sport)
             self.cache[cache_key] = (time.time(), fallback_data)
             return fallback_data
+
+    def _fetch_current_sportybet_odds(self, sport):
+        """Fetch SportyBet Kenya events from the current public factsCenter API."""
+        sport_id = SPORTYBET_CURRENT_SPORT_IDS.get(sport)
+        if not sport_id:
+            return []
+
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                          "(KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+            "Accept": "application/json, text/plain, */*",
+            "Referer": f"https://www.sportybet.com/ke/sport/{sport}/",
+            "Clientid": "web",
+            "Platform": "web",
+            "Operid": "1",
+        }
+        endpoints = [
+            "https://www.sportybet.com/api/ke/factsCenter/liveOrPrematchEvents",
+            "https://www.sportybet.com/api/ke/factsCenter/importantEvents",
+        ]
+        params = {"sportId": sport_id, "productId": 3}
+        events_by_id = {}
+
+        for endpoint in endpoints:
+            response = requests.get(endpoint, headers=headers, params=params, timeout=self.live_fetch_timeout)
+            response.raise_for_status()
+            payload = response.json()
+            if payload.get("bizCode") != 10000:
+                continue
+
+            for tournament in payload.get("data") or []:
+                tournament_name = tournament.get("name") or "SportyBet"
+                category_name = tournament.get("categoryName") or ""
+                for event in tournament.get("events") or []:
+                    parsed = self._parse_current_sportybet_event(event, tournament_name, category_name)
+                    if parsed:
+                        events_by_id[parsed["id"]] = parsed
+
+        return list(events_by_id.values())[:50]
+
+    def _parse_current_sportybet_event(self, event, tournament_name, category_name):
+        structured_markets = {}
+
+        for market in event.get("markets") or []:
+            market_name = market.get("name") or market.get("desc") or ""
+            outcomes = market.get("outcomes") or []
+            active_outcomes = [
+                outcome for outcome in outcomes
+                if outcome.get("isActive", 1) == 1 and outcome.get("odds") not in (None, "")
+            ]
+            if not active_outcomes:
+                continue
+
+            if market.get("id") == "1" or market_name == "1X2":
+                structured_markets["1X2"] = self._map_named_outcomes(active_outcomes, {
+                    "Home": "Home",
+                    "Draw": "Draw",
+                    "Away": "Away",
+                })
+            elif "Over/Under" in market_name and "Over/Under" not in structured_markets:
+                structured_markets["Over/Under"] = {
+                    outcome.get("desc", f"Option {index + 1}"): self._safe_float(outcome.get("odds"))
+                    for index, outcome in enumerate(active_outcomes[:2])
+                }
+            elif ("Both Teams to Score" in market_name or market_name == "GG/NG") and "GG/NG" not in structured_markets:
+                structured_markets["GG/NG"] = self._map_named_outcomes(active_outcomes, {
+                    "Yes": "Yes",
+                    "No": "No",
+                })
+            elif "Double Chance" in market_name and "Double Chance" not in structured_markets:
+                structured_markets["Double Chance"] = {
+                    outcome.get("desc", f"Option {index + 1}"): self._safe_float(outcome.get("odds"))
+                    for index, outcome in enumerate(active_outcomes[:3])
+                }
+
+        if not structured_markets:
+            return None
+
+        sport_info = event.get("sport") or {}
+        category = sport_info.get("category") or {}
+        tournament = category.get("tournament") or {}
+        league_parts = [
+            category.get("name") or category_name,
+            tournament.get("name") or tournament_name,
+        ]
+        league = " - ".join(part for part in league_parts if part)
+        match_status = event.get("matchStatus") or ""
+        is_live = bool(event.get("status") == 1 or match_status not in {"", "Not start"})
+
+        return {
+            "id": event.get("eventId") or event.get("gameId") or abs(hash(str(event))) % 1000000,
+            "home_team": event.get("homeTeamName") or "Home",
+            "away_team": event.get("awayTeamName") or "Away",
+            "league": league or tournament_name,
+            "country": category.get("name") or category_name or "Kenya",
+            "markets": structured_markets,
+            "site": "sportybet",
+            "live": is_live,
+            "status": match_status,
+            "source": "sportybet_current_api",
+            "last_updated": datetime.now().isoformat(),
+        }
+
+    def _map_named_outcomes(self, outcomes, wanted):
+        mapped = {}
+        for outcome in outcomes:
+            label = outcome.get("desc")
+            if label in wanted:
+                mapped[wanted[label]] = self._safe_float(outcome.get("odds"))
+        return mapped
+
+    def _safe_float(self, value):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return value
 
     def _run_with_timeout(self, func, *args):
         """Run slow live scrapers with a hard response deadline."""
