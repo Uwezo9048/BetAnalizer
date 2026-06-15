@@ -7,10 +7,13 @@ const siteGrid = document.getElementById('siteGrid');
 const selectedSiteDisplay = document.getElementById('selectedSiteDisplay');
 const siteInfoText = document.getElementById('siteInfoText');
 const refreshBtn = document.getElementById('refreshBtn');
-const matchesContainer = document.getElementById('matchesContainer');
+const liveMatchesContainer = document.getElementById('liveMatchesContainer');
+const upcomingMatchesContainer = document.getElementById('upcomingMatchesContainer');
 const matchesSourceText = document.getElementById('matchesSourceText');
+const upcomingSourceText = document.getElementById('upcomingSourceText');
 const matchesCountDisplay = document.getElementById('matchesCountDisplay');
 const matchesCount = document.getElementById('matchesCount');
+const upcomingMatchesCount = document.getElementById('upcomingMatchesCount');
 const valueBetsCount = document.getElementById('valueBetsCount');
 const aiSelectionPanel = document.getElementById('aiSelectionPanel');
 const analyzeAllBtn = document.getElementById('analyzeAllBtn');
@@ -25,6 +28,14 @@ const manualOutcome = document.getElementById('manualOutcome');
 const manualOdds = document.getElementById('manualOdds');
 const manualPredictBtn = document.getElementById('manualPredictBtn');
 const manualResult = document.getElementById('manualResult');
+const slipScreenshotInput = document.getElementById('slipScreenshotInput');
+const slipFileName = document.getElementById('slipFileName');
+const slipPreview = document.getElementById('slipPreview');
+const slipTextInput = document.getElementById('slipTextInput');
+const typedSlipRows = document.getElementById('typedSlipRows');
+const addSlipRowBtn = document.getElementById('addSlipRowBtn');
+const analyzeSlipBtn = document.getElementById('analyzeSlipBtn');
+const slipAnalysisResult = document.getElementById('slipAnalysisResult');
 
 const siteGradients = {
     sportybet: 'gradient-sporty',
@@ -134,7 +145,8 @@ function updateSelectedSiteDisplay() {
 }
 
 async function loadMatches() {
-    matchesContainer.innerHTML = '<div class="p-8 text-center"><div class="loading-spinner"></div><p class="text-gray-400 mt-2">Fetching odds...</p></div>';
+    liveMatchesContainer.innerHTML = '<div class="p-8 text-center"><div class="loading-spinner"></div><p class="text-gray-400 mt-2">Fetching live odds...</p></div>';
+    upcomingMatchesContainer.innerHTML = '<div class="p-8 text-center"><div class="loading-spinner"></div><p class="text-gray-400 mt-2">Fetching upcoming matches...</p></div>';
 
     try {
         const response = await fetch('/api/matches', {
@@ -145,30 +157,46 @@ async function loadMatches() {
         const data = await response.json();
 
         if (data.error) {
-            matchesContainer.innerHTML = `<div class="p-8 text-center text-red-300">Error: ${escapeHtml(data.error)}</div>`;
+            liveMatchesContainer.innerHTML = `<div class="p-8 text-center text-red-300">Error: ${escapeHtml(data.error)}</div>`;
+            upcomingMatchesContainer.innerHTML = '<div class="p-8 text-center text-gray-400">No upcoming matches loaded.</div>';
             return;
         }
 
         currentMatches = data.matches || [];
+        const liveMatches = currentMatches.filter(isLiveMatch);
+        const upcomingMatches = currentMatches.filter(match => !isLiveMatch(match));
         matchesCountDisplay.textContent = currentMatches.length;
-        matchesCount.textContent = `${currentMatches.length} matches`;
-        matchesSourceText.textContent = `${data.site_name} - ${data.is_live_data ? 'Live odds' : 'Sample data'}`;
+        matchesCount.textContent = `${liveMatches.length} live`;
+        upcomingMatchesCount.textContent = `${upcomingMatches.length} upcoming`;
+        const sourceLabels = {
+            live: 'Live odds',
+            stored: 'Stored odds',
+            sample: 'Sample data'
+        };
+        matchesSourceText.textContent = `${data.site_name} - ${sourceLabels[data.data_source] || 'Sample data'}`;
+        upcomingSourceText.textContent = `${data.site_name} - not live yet`;
 
-        renderMatches(currentMatches);
+        renderMatches(liveMatches, liveMatchesContainer, 'No live matches right now. Upcoming matches are listed below.');
+        renderMatches(upcomingMatches, upcomingMatchesContainer, 'No upcoming matches available at this time.');
         await analyzeAllMatches();
     } catch (error) {
         console.error('Error loading matches:', error);
-        matchesContainer.innerHTML = `<div class="p-8 text-center text-red-300">Failed to load matches: ${escapeHtml(error.message)}</div>`;
+        liveMatchesContainer.innerHTML = `<div class="p-8 text-center text-red-300">Failed to load matches: ${escapeHtml(error.message)}</div>`;
+        upcomingMatchesContainer.innerHTML = '<div class="p-8 text-center text-gray-400">No upcoming matches loaded.</div>';
     }
 }
 
-function renderMatches(matches) {
+function isLiveMatch(match) {
+    return Boolean(match.live && !match.from_storage && !match.sample);
+}
+
+function renderMatches(matches, container, emptyMessage) {
     if (!matches.length) {
-        matchesContainer.innerHTML = '<div class="p-8 text-center text-gray-400">No matches available at this time.</div>';
+        container.innerHTML = `<div class="p-8 text-center text-gray-400">${escapeHtml(emptyMessage)}</div>`;
         return;
     }
 
-    matchesContainer.innerHTML = matches.map(match => `
+    container.innerHTML = matches.map(match => `
         <button type="button" class="match-card block w-full text-left p-4 hover:bg-gray-800/80"
             onclick="analyzeMatch(${encodeForInlineJson(match)})">
             <div class="flex flex-col sm:flex-row sm:justify-between sm:items-start gap-2 mb-3">
@@ -177,7 +205,7 @@ function renderMatches(matches) {
                     <div class="text-xs text-gray-400">${escapeHtml(match.league || match.country || 'Football')}</div>
                 </div>
                 <div class="flex gap-2">
-                    ${match.live ? '<span class="bg-red-600/80 text-white text-xs px-2 py-1 rounded-full live-indicator">LIVE</span>' : ''}
+                    ${isLiveMatch(match) ? '<span class="bg-red-600/80 text-white text-xs px-2 py-1 rounded-full live-indicator">LIVE</span>' : '<span class="bg-blue-600/60 text-white text-xs px-2 py-1 rounded-full">Upcoming</span>'}
                     ${match.sample ? '<span class="bg-yellow-600/60 text-white text-xs px-2 py-1 rounded-full">Sample</span>' : ''}
                 </div>
             </div>
@@ -389,6 +417,163 @@ manualPredictBtn.addEventListener('click', async () => {
     }
 });
 
+slipScreenshotInput.addEventListener('change', () => {
+    const file = slipScreenshotInput.files?.[0];
+    if (!file) {
+        slipFileName.textContent = 'PNG, JPG, or WEBP';
+        slipPreview.classList.add('hidden');
+        slipPreview.removeAttribute('src');
+        return;
+    }
+
+    slipFileName.textContent = file.name;
+    slipPreview.src = URL.createObjectURL(file);
+    slipPreview.classList.remove('hidden');
+});
+
+addSlipRowBtn.addEventListener('click', () => addTypedSlipRow());
+analyzeSlipBtn.addEventListener('click', analyzeBetslip);
+addTypedSlipRow();
+
+async function analyzeBetslip() {
+    const file = slipScreenshotInput.files?.[0];
+    const slipText = slipTextInput.value.trim();
+    const typedSlipText = getTypedSlipText();
+    const combinedSlipText = [slipText, typedSlipText].filter(Boolean).join('\n');
+
+    if (!file && !combinedSlipText) {
+        alert('Upload a screenshot, paste betslip text, or type odds manually first');
+        return;
+    }
+
+    const formData = new FormData();
+    if (file) formData.append('screenshot', file);
+    formData.append('slip_text', combinedSlipText);
+
+    slipAnalysisResult.classList.remove('hidden');
+    slipAnalysisResult.innerHTML = '<div class="p-4 text-center bg-gray-800 rounded-lg"><div class="loading-spinner" style="width:24px;height:24px"></div><p class="text-xs mt-2 text-gray-400">Analyzing betslip...</p></div>';
+
+    try {
+        const response = await fetch('/api/analyze-slip', {
+            method: 'POST',
+            body: formData
+        });
+        const data = await response.json();
+
+        if (!response.ok || data.error) {
+            slipAnalysisResult.innerHTML = `
+                <div class="selection-row border-red-500/30">
+                    <div class="text-sm text-red-300">${escapeHtml(data.error || 'Betslip analysis failed')}</div>
+                    ${data.ocr_available === false ? '<div class="text-xs text-yellow-300 mt-2">OCR is not installed on this server. Paste the betslip text in the box above and run the analysis again.</div>' : ''}
+                </div>
+            `;
+            return;
+        }
+
+        if (!combinedSlipText && data.ocr_text) {
+            slipTextInput.value = data.ocr_text;
+        }
+
+        renderBetslipAnalysis(data);
+    } catch (error) {
+        slipAnalysisResult.innerHTML = `<div class="selection-row text-red-300 text-sm">Error: ${escapeHtml(error.message)}</div>`;
+    }
+}
+
+function addTypedSlipRow(values = {}) {
+    const row = document.createElement('div');
+    row.className = 'typed-slip-row';
+    row.innerHTML = `
+        <input type="text" class="form-control typed-slip-match" placeholder="Match" value="${escapeAttribute(values.match || '')}">
+        <input type="text" class="form-control typed-slip-selection" placeholder="Pick / market" value="${escapeAttribute(values.selection || '')}">
+        <input type="number" class="form-control typed-slip-odds" step="0.01" min="1.01" placeholder="Odds" value="${escapeAttribute(values.odds || '')}">
+        <button type="button" class="mini-action typed-slip-remove" title="Remove">x</button>
+    `;
+
+    row.querySelector('.typed-slip-remove').addEventListener('click', () => {
+        if (typedSlipRows.children.length > 1) {
+            row.remove();
+        } else {
+            row.querySelectorAll('input').forEach(input => {
+                input.value = '';
+            });
+        }
+    });
+
+    typedSlipRows.appendChild(row);
+}
+
+function getTypedSlipText() {
+    const lines = [];
+    typedSlipRows.querySelectorAll('.typed-slip-row').forEach(row => {
+        const match = row.querySelector('.typed-slip-match')?.value.trim();
+        const selection = row.querySelector('.typed-slip-selection')?.value.trim();
+        const odds = parseFloat(row.querySelector('.typed-slip-odds')?.value);
+
+        if (match && selection && odds >= 1.01) {
+            lines.push(`${match} - ${selection} ${odds.toFixed(2)}`);
+        }
+    });
+    return lines.join('\n');
+}
+
+function renderBetslipAnalysis(data) {
+    slipAnalysisResult.innerHTML = `
+        <div class="space-y-3">
+            <div class="selection-row">
+                <div class="text-sm font-bold text-green-300">${escapeHtml(data.summary)}</div>
+                <div class="grid grid-cols-2 gap-2 text-xs mt-3">
+                    ${metricBox('Original Odds', data.original_combined_odds || '-')}
+                    ${metricBox('Suggested Odds', data.suggested_combined_odds || '-')}
+                    ${metricBox('Kept', data.kept_count)}
+                    ${metricBox('Removed', data.removed_count, data.removed_count ? 'text-red-300' : 'text-green-300')}
+                </div>
+                ${data.ocr_available ? '' : '<div class="text-xs text-yellow-300 mt-3">OCR is not installed, so analysis used the text box content.</div>'}
+            </div>
+            ${renderSlipGroup('Suggested Slip', data.kept, 'keep')}
+            ${renderSlipGroup('Removed Risky Selections', data.removed, 'remove')}
+        </div>
+    `;
+}
+
+function renderSlipGroup(title, selections = [], type = 'keep') {
+    if (!selections.length) {
+        return `
+            <div class="selection-row">
+                <div class="text-xs text-gray-400">${escapeHtml(title)}</div>
+                <div class="text-sm mt-1">${type === 'keep' ? 'No selections passed the risk filter.' : 'No risky selections removed.'}</div>
+            </div>
+        `;
+    }
+
+    return `
+        <div class="space-y-2">
+            <div class="text-xs uppercase tracking-wide text-gray-400">${escapeHtml(title)}</div>
+            ${selections.map(selection => `
+                <div class="selection-row">
+                    <div class="flex justify-between gap-3">
+                        <div>
+                            <div class="font-semibold text-sm">${escapeHtml(selection.match)}</div>
+                            <div class="text-xs text-gray-400">${escapeHtml(selection.selection)} · ${escapeHtml(selection.market)}</div>
+                        </div>
+                        <div class="text-right">
+                            <div class="font-bold ${type === 'keep' ? 'text-green-300' : 'text-red-300'}">${selection.odds}</div>
+                            <div class="text-xs text-gray-400">${selection.confidence}% conf.</div>
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-2 gap-2 text-xs mt-2">
+                        <div>Win prob: <span class="font-mono">${selection.true_probability}%</span></div>
+                        <div>Lose prob: <span class="font-mono">${selection.losing_probability}%</span></div>
+                        <div>Edge: <span class="font-mono ${selection.value_edge > 0 ? 'text-green-300' : 'text-red-300'}">${selection.value_edge > 0 ? '+' : ''}${selection.value_edge}%</span></div>
+                        <div>Stake: <span class="font-mono">KES ${selection.suggested_stake}</span></div>
+                    </div>
+                    <div class="text-xs text-gray-400 mt-2">${escapeHtml(selection.reason)}</div>
+                </div>
+            `).join('')}
+        </div>
+    `;
+}
+
 function setupEventListeners() {
     siteSearchInput.addEventListener('input', event => {
         const query = event.target.value.toLowerCase().trim();
@@ -416,6 +601,10 @@ function escapeHtml(value) {
         '"': '&quot;',
         "'": '&#039;'
     }[char]));
+}
+
+function escapeAttribute(value) {
+    return escapeHtml(value).replace(/`/g, '&#096;');
 }
 
 window.selectSite = selectSite;

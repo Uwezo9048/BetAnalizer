@@ -69,16 +69,29 @@
                 <div class="dashboard-panel overflow-hidden">
                     <div class="panel-header">
                         <div>
-                            <h2 class="panel-title">Live Matches & Odds</h2>
+                            <h2 class="panel-title">Live Matches</h2>
                             <p class="panel-subtitle" id="matchesSourceText">Fetching odds from SportyBet...</p>
                         </div>
                         <div class="count-pill" id="matchesCount"></div>
                     </div>
-                    <div id="matchesContainer" class="divide-y divide-gray-800 max-h-[620px] overflow-y-auto">
+                    <div id="liveMatchesContainer" class="divide-y divide-gray-800 max-h-[420px] overflow-y-auto">
                         <div class="p-8 text-center">
                             <div class="loading-spinner"></div>
                             <p class="text-gray-400 mt-2">Loading matches...</p>
                         </div>
+                    </div>
+                </div>
+
+                <div class="dashboard-panel overflow-hidden">
+                    <div class="panel-header">
+                        <div>
+                            <h2 class="panel-title">Upcoming Matches</h2>
+                            <p class="panel-subtitle" id="upcomingSourceText">Matches that are not live yet</p>
+                        </div>
+                        <div class="count-pill" id="upcomingMatchesCount"></div>
+                    </div>
+                    <div id="upcomingMatchesContainer" class="divide-y divide-gray-800 max-h-[620px] overflow-y-auto">
+                        <div class="p-8 text-center text-gray-400">Waiting for odds...</div>
                     </div>
                 </div>
 
@@ -144,6 +157,34 @@
                         <input type="number" id="manualOdds" step="0.01" placeholder="Odds" class="form-control w-full">
                         <button id="manualPredictBtn" class="secondary-action w-full">AI Predict</button>
                         <div id="manualResult" class="hidden mt-3 p-3 bg-gray-800 rounded-lg text-sm"></div>
+                    </div>
+                </div>
+
+                <div class="dashboard-panel overflow-hidden">
+                    <div class="panel-header compact">
+                        <div>
+                            <h2 class="panel-title">Betslip Screenshot</h2>
+                            <p class="panel-subtitle">Upload a slip or paste the detected selections</p>
+                        </div>
+                    </div>
+                    <div class="p-5 space-y-3">
+                        <label for="slipScreenshotInput" class="upload-zone">
+                            <span class="upload-zone-title">Browse files to upload photo</span>
+                            <span class="upload-zone-subtitle" id="slipFileName">PNG, JPG, or WEBP</span>
+                            <span class="upload-zone-button">Open File Picker</span>
+                        </label>
+                        <input type="file" id="slipScreenshotInput" class="hidden" accept="image/*">
+                        <img id="slipPreview" class="hidden betslip-preview" alt="Betslip preview">
+                        <textarea id="slipTextInput" class="form-control w-full min-h-[120px]" placeholder="Paste betslip text if OCR is unavailable or edit detected text here. Example: Arsenal vs Chelsea - Home 1.85"></textarea>
+                        <div class="space-y-2">
+                            <div class="flex items-center justify-between gap-3">
+                                <div class="text-xs uppercase tracking-wide text-gray-400">Typed odds</div>
+                                <button type="button" id="addSlipRowBtn" class="mini-action">Add Selection</button>
+                            </div>
+                            <div id="typedSlipRows" class="space-y-2"></div>
+                        </div>
+                        <button id="analyzeSlipBtn" class="secondary-action w-full">Analyze Betslip</button>
+                        <div id="slipAnalysisResult" class="hidden mt-3"></div>
                     </div>
                 </div>
 

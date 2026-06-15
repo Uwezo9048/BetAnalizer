@@ -6,6 +6,8 @@ Sites with live feed: SportyBet, Bet9ja, 22bet, Paripesa, Nairabet, Betking
 from flask import Flask, render_template, jsonify, request
 from flask_cors import CORS
 import os
+import re
+import shutil
 from datetime import datetime
 from dotenv import load_dotenv
 
@@ -59,6 +61,10 @@ def get_matches():
         
         matches = fetcher.fetch_live_odds(site_id, sport)
         site_info = SUPPORTED_LIVE_SITES[site_id]
+        first_match = matches[0] if matches else {}
+        is_sample_data = bool(first_match.get('sample', False))
+        is_stored_data = bool(first_match.get('from_storage', False))
+        is_live_data = LIVE_FEEDS_ENABLED and API_AVAILABLE and not is_sample_data and not is_stored_data
         
         return jsonify({
             'site': site_id,
@@ -66,7 +72,9 @@ def get_matches():
             'site_flag': site_info['flag'],
             'matches': matches,
             'count': len(matches),
-            'is_live_data': LIVE_FEEDS_ENABLED and API_AVAILABLE and not (matches and matches[0].get('sample', False)),
+            'is_live_data': is_live_data,
+            'is_real_odds': not is_sample_data,
+            'data_source': 'live' if is_live_data else 'stored' if is_stored_data else 'sample',
             'api_available': API_AVAILABLE and LIVE_FEEDS_ENABLED,
             'timestamp': datetime.now().isoformat()
         })
@@ -174,6 +182,58 @@ def custom_predict():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/analyze-slip', methods=['POST'])
+def analyze_betslip():
+    """Analyze a screenshot/text betslip and suggest a cleaner slip."""
+    try:
+        uploaded_file = request.files.get('screenshot')
+        user_text = request.form.get('slip_text', '').strip()
+        ocr_text = _extract_text_from_image(uploaded_file) if uploaded_file else ''
+        slip_text = user_text or ocr_text
+
+        if not slip_text:
+            return jsonify({
+                'error': 'No readable betslip text found. OCR is optional on this server, so paste or type the betslip lines and try again.',
+                'ocr_available': _ocr_available(),
+                'ocr_text': ocr_text
+            }), 400
+
+        selections = _parse_betslip_text(slip_text)
+        if not selections:
+            return jsonify({
+                'error': 'Could not detect selections and decimal odds from the betslip text.',
+                'ocr_available': _ocr_available(),
+                'ocr_text': ocr_text
+            }), 400
+
+        analyzed = [_analyze_slip_selection(selection) for selection in selections]
+        kept = [selection for selection in analyzed if selection['decision'] == 'keep']
+        removed = [selection for selection in analyzed if selection['decision'] == 'remove']
+
+        original_odds = _combined_odds(analyzed)
+        suggested_odds = _combined_odds(kept)
+        average_confidence = round(sum(item['confidence'] for item in kept) / len(kept), 1) if kept else 0
+
+        return jsonify({
+            'ocr_available': _ocr_available(),
+            'ocr_text': ocr_text,
+            'source_text': slip_text,
+            'total_selections': len(analyzed),
+            'kept_count': len(kept),
+            'removed_count': len(removed),
+            'original_combined_odds': original_odds,
+            'suggested_combined_odds': suggested_odds,
+            'average_confidence': average_confidence,
+            'kept': kept,
+            'removed': removed,
+            'all_selections': analyzed,
+            'summary': _build_betslip_summary(len(analyzed), kept, removed, original_odds, suggested_odds),
+            'timestamp': datetime.now().isoformat()
+        })
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/api/status')
 def api_status():
     """Check API status"""
@@ -185,6 +245,172 @@ def api_status():
         'live_feeds_active': API_AVAILABLE and LIVE_FEEDS_ENABLED,
         'timestamp': datetime.now().isoformat()
     })
+
+def _ocr_available():
+    try:
+        import pytesseract
+        from PIL import Image  # noqa: F401
+        command_path = _get_tesseract_command()
+        if command_path:
+            pytesseract.pytesseract.tesseract_cmd = command_path
+        pytesseract.get_tesseract_version()
+        return True
+    except Exception:
+        return False
+
+def _get_tesseract_command():
+    command_path = os.environ.get('TESSERACT_CMD') or shutil.which('tesseract')
+    if command_path and os.path.exists(command_path):
+        return command_path
+
+    common_paths = [
+        r'C:\Program Files\Tesseract-OCR\tesseract.exe',
+        r'C:\Program Files (x86)\Tesseract-OCR\tesseract.exe'
+    ]
+    for path in common_paths:
+        if os.path.exists(path):
+            return path
+
+    return None
+
+def _extract_text_from_image(uploaded_file):
+    if not uploaded_file or not _ocr_available():
+        return ''
+
+    try:
+        from io import BytesIO
+        import pytesseract
+        from PIL import Image
+
+        command_path = _get_tesseract_command()
+        if command_path:
+            pytesseract.pytesseract.tesseract_cmd = command_path
+
+        image = Image.open(BytesIO(uploaded_file.read()))
+        return pytesseract.image_to_string(image).strip()
+    except Exception as e:
+        print(f"Betslip OCR failed: {e}")
+        return ''
+
+def _parse_betslip_text(text):
+    selections = []
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    odds_pattern = re.compile(r'(?<!\d)([1-9]\d{0,2}\.\d{2})(?!\d)')
+    compact_odds_pattern = re.compile(r'(?<!\d)([1-9]\d{2})(?!\d)\s*$')
+
+    for index, line in enumerate(lines):
+        matches = odds_pattern.findall(line)
+        compact_match = None if matches else compact_odds_pattern.search(line)
+        if not matches and not compact_match:
+            continue
+
+        odds_text = matches[-1] if matches else f"{compact_match.group(1)[0]}.{compact_match.group(1)[1:]}"
+        odds = float(odds_text)
+        if odds < 1.01 or odds > 1000:
+            continue
+
+        line_without_odds = odds_pattern.sub('', line)
+        if compact_match:
+            line_without_odds = compact_odds_pattern.sub('', line_without_odds)
+        line_without_odds = line_without_odds.strip(' -|:')
+        context = []
+        if index > 0 and not odds_pattern.search(lines[index - 1]):
+            context.append(lines[index - 1])
+        if line_without_odds:
+            context.append(line_without_odds)
+
+        label = ' - '.join(context).strip(' -|:') or f'Selection {len(selections) + 1}'
+        selection, market, match_name = _split_selection_label(label)
+        selections.append({
+            'match': match_name,
+            'selection': selection,
+            'market': market,
+            'odds': odds
+        })
+
+    return selections
+
+def _split_selection_label(label):
+    cleaned = re.sub(r'\s+', ' ', label).strip()
+    market = 'Betslip Selection'
+
+    known_markets = [
+        '1X2',
+        'Match Winner',
+        'Double Chance',
+        'Over/Under',
+        'Both Teams To Score',
+        'GG/NG',
+        'Handicap'
+    ]
+    for known_market in known_markets:
+        if known_market.lower() in cleaned.lower():
+            market = known_market
+            break
+
+    separators = [' - ', ' | ', ': ']
+    parts = [cleaned]
+    for separator in separators:
+        if separator in cleaned:
+            parts = [part.strip() for part in cleaned.split(separator) if part.strip()]
+            break
+
+    if len(parts) >= 2:
+        match_name = parts[0]
+        selection = parts[-1]
+    else:
+        match_name = cleaned
+        selection = cleaned
+
+    return selection, market, match_name
+
+def _analyze_slip_selection(selection):
+    odds = selection['odds']
+    market = selection.get('market', 'Betslip Selection')
+    market_type = ai._detect_market_type(market)
+    true_probability = ai.calculate_true_probability(odds, market_type)
+    implied_probability = ai.calculate_implied_probability(odds)
+    value_edge = ai.calculate_value_score(odds, true_probability) * 100
+    losing_probability = (1 - true_probability) * 100
+    confidence = ai._get_confidence(value_edge, odds)
+
+    remove_reasons = []
+    if losing_probability >= 55:
+        remove_reasons.append('high losing probability')
+    if confidence < 45:
+        remove_reasons.append('low confidence')
+
+    decision = 'remove' if remove_reasons else 'keep'
+
+    return {
+        **selection,
+        'implied_probability': round(implied_probability * 100, 1),
+        'true_probability': round(true_probability * 100, 1),
+        'losing_probability': round(losing_probability, 1),
+        'value_edge': round(value_edge, 1),
+        'confidence': confidence,
+        'decision': decision,
+        'reason': ', '.join(remove_reasons) if remove_reasons else 'acceptable risk profile',
+        'suggested_stake': round(ai.calculate_kelly_stake(odds, true_probability), 2) if decision == 'keep' else 0
+    }
+
+def _combined_odds(selections):
+    if not selections:
+        return 0
+
+    combined = 1
+    for selection in selections:
+        combined *= selection['odds']
+    return round(combined, 2)
+
+def _build_betslip_summary(total, kept, removed, original_odds, suggested_odds):
+    if not kept:
+        return 'All detected selections look too risky. Rebuild the slip with lower-risk markets or fewer legs.'
+
+    if removed:
+        return f'Removed {len(removed)} risky selection(s) from {total}. Suggested odds moved from {original_odds} to {suggested_odds} with a cleaner risk profile.'
+
+    return f'No removals needed from {total} detected selection(s). Suggested combined odds remain {suggested_odds}.'
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))

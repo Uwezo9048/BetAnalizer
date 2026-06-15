@@ -17,6 +17,10 @@ import threading
 import time
 from datetime import datetime
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 LIVE_FEEDS_ENABLED = os.environ.get("LIVE_FEEDS_ENABLED", "0") == "1"
 API_IMPORT_ERROR = None
 
@@ -148,15 +152,17 @@ class LiveOddsFetcher:
             raw_data = self._run_with_timeout(api_instance.Get_games, sport)
             
             if not raw_data:
-                sample_data = self._get_sample_data(site_id)
-                self.cache[cache_key] = (time.time(), sample_data)
-                return sample_data
+                stored_matches = self._get_stored_matches(site_id, sport)
+                fallback_data = stored_matches or self._get_sample_data(site_id)
+                self.cache[cache_key] = (time.time(), fallback_data)
+                return fallback_data
             
             matches = self._parse_api_response(raw_data, site_id)
             if not matches:
-                sample_data = self._get_sample_data(site_id)
-                self.cache[cache_key] = (time.time(), sample_data)
-                return sample_data
+                stored_matches = self._get_stored_matches(site_id, sport)
+                fallback_data = stored_matches or self._get_sample_data(site_id)
+                self.cache[cache_key] = (time.time(), fallback_data)
+                return fallback_data
             
             # Cache results
             self.cache[cache_key] = (time.time(), matches)
@@ -165,9 +171,10 @@ class LiveOddsFetcher:
             
         except Exception as e:
             print(f"Error fetching from {site_id}: {e}")
-            sample_data = self._get_sample_data(site_id)
-            self.cache[cache_key] = (time.time(), sample_data)
-            return sample_data
+            stored_matches = self._get_stored_matches(site_id, sport)
+            fallback_data = stored_matches or self._get_sample_data(site_id)
+            self.cache[cache_key] = (time.time(), fallback_data)
+            return fallback_data
 
     def _run_with_timeout(self, func, *args):
         """Run slow live scrapers with a hard response deadline."""
@@ -249,6 +256,31 @@ class LiveOddsFetcher:
         except Exception as e:
             print(f"Parse error: {e}")
             return self._get_sample_data(site_id)
+
+    def _get_stored_matches(self, site_id, sport):
+        """Load the freshest stored OddsAfrica data that contains usable matches."""
+        storage_paths = [
+            os.path.join(os.path.dirname(__file__), "engine", "storage_engine", "bookie_storage", sport, f"{site_id}_{sport}.json"),
+            os.path.join(os.path.dirname(__file__), "OddsAfrica-API", "engine", "storage_engine", "bookie_storage", sport, f"{site_id}_{sport}.json"),
+        ]
+        existing_paths = [path for path in storage_paths if os.path.isfile(path)]
+        existing_paths.sort(key=os.path.getmtime, reverse=True)
+
+        for path in existing_paths:
+            try:
+                with open(path, "r", encoding="utf-8") as data_file:
+                    stored_data = json.load(data_file)
+                matches = self._parse_api_response(stored_data, site_id)
+                if matches and not matches[0].get("sample"):
+                    for match in matches:
+                        match["live"] = False
+                        match["from_storage"] = True
+                        match["storage_updated_at"] = datetime.fromtimestamp(os.path.getmtime(path)).isoformat()
+                    return matches
+            except Exception as e:
+                print(f"Error loading stored odds from {path}: {e}")
+
+        return []
     
     def _get_sample_data(self, site_id):
         """Return sample data if API fails (fallback)"""
