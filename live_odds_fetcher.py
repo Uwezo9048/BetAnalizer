@@ -71,6 +71,27 @@ SUPPORTED_LIVE_SITES = {
     }
 }
 
+SUPPORTED_SPORTS = {
+    "football": {"name": "Football", "icon": "FB", "live_feed": True},
+    "basketball": {"name": "Basketball", "icon": "BB", "live_feed": True},
+    "tennis": {"name": "Tennis", "icon": "TN", "live_feed": False},
+    "volleyball": {"name": "Volleyball", "icon": "VB", "live_feed": True},
+    "icehockey": {"name": "Ice Hockey", "icon": "IH", "live_feed": True},
+    "darts": {"name": "Darts", "icon": "DT", "live_feed": True},
+    "baseball": {"name": "Baseball", "icon": "BA", "live_feed": False},
+    "american_football": {"name": "American Football", "icon": "AF", "live_feed": False},
+    "cricket": {"name": "Cricket", "icon": "CR", "live_feed": False},
+    "mma": {"name": "MMA", "icon": "MM", "live_feed": False},
+    "badminton": {"name": "Badminton", "icon": "BD", "live_feed": False},
+    "beach_volleyball": {"name": "Beach Volleyball", "icon": "BV", "live_feed": False},
+    "futsal": {"name": "Futsal", "icon": "FS", "live_feed": False},
+    "rugby": {"name": "Rugby", "icon": "RG", "live_feed": False},
+    "snooker": {"name": "Snooker", "icon": "SN", "live_feed": False},
+    "counter_strike": {"name": "Counter-Strike", "icon": "CS", "live_feed": False},
+    "dota_2": {"name": "Dota 2", "icon": "D2", "live_feed": False},
+    "league_of_legends": {"name": "League of Legends", "icon": "LL", "live_feed": False},
+}
+
 # Try to import OddsAfrica-API
 try:
     local_api_path = os.path.join(os.path.dirname(__file__), "OddsAfrica-API")
@@ -126,6 +147,21 @@ class LiveOddsFetcher:
                 "live_feed": API_AVAILABLE and LIVE_FEEDS_ENABLED
             })
         return sites
+
+    def get_supported_sports(self, site_id="sportybet"):
+        """Return all visible sports categories, including unsupported future categories."""
+        sports = []
+        for key, sport in SUPPORTED_SPORTS.items():
+            enabled = bool(sport.get("live_feed"))
+            sports.append({
+                "id": key,
+                "name": sport["name"],
+                "icon": sport["icon"],
+                "enabled": enabled,
+                "live_feed": enabled and API_AVAILABLE and LIVE_FEEDS_ENABLED,
+                "stored_count": self._count_stored_matches(site_id, key) if enabled else 0
+            })
+        return sports
     
     def fetch_live_odds(self, site_id, sport="football"):
         """
@@ -145,8 +181,11 @@ class LiveOddsFetcher:
             if (time.time() - cache_time) < self.cache_duration:
                 return cache_data
         
+        if sport not in SUPPORTED_SPORTS or not SUPPORTED_SPORTS[sport].get("live_feed"):
+            return []
+
         if not LIVE_FEEDS_ENABLED or not API_AVAILABLE or site_id not in API_INSTANCES:
-            return self._get_sample_data(site_id)
+            return self._get_fallback_data(site_id, sport)
         
         try:
             api_instance = API_INSTANCES[site_id]
@@ -154,14 +193,14 @@ class LiveOddsFetcher:
             
             if not raw_data:
                 stored_matches = self._get_stored_matches(site_id, sport)
-                fallback_data = stored_matches or self._get_sample_data(site_id)
+                fallback_data = stored_matches or self._get_fallback_data(site_id, sport)
                 self.cache[cache_key] = (time.time(), fallback_data)
                 return fallback_data
             
             matches = self._parse_api_response(raw_data, site_id)
             if not matches:
                 stored_matches = self._get_stored_matches(site_id, sport)
-                fallback_data = stored_matches or self._get_sample_data(site_id)
+                fallback_data = stored_matches or self._get_fallback_data(site_id, sport)
                 self.cache[cache_key] = (time.time(), fallback_data)
                 return fallback_data
             
@@ -173,7 +212,7 @@ class LiveOddsFetcher:
         except Exception as e:
             print(f"Error fetching from {site_id}: {e}")
             stored_matches = self._get_stored_matches(site_id, sport)
-            fallback_data = stored_matches or self._get_sample_data(site_id)
+            fallback_data = stored_matches or self._get_fallback_data(site_id, sport)
             self.cache[cache_key] = (time.time(), fallback_data)
             return fallback_data
 
@@ -281,6 +320,17 @@ class LiveOddsFetcher:
             except Exception as e:
                 print(f"Error loading stored odds from {path}: {e}")
 
+        return []
+
+    def _count_stored_matches(self, site_id, sport):
+        try:
+            return len(self._get_stored_matches(site_id, sport))
+        except Exception:
+            return 0
+
+    def _get_fallback_data(self, site_id, sport):
+        if sport == "football":
+            return self._get_sample_data(site_id)
         return []
     
     def _get_sample_data(self, site_id):

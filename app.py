@@ -20,6 +20,7 @@ from betting_ai import get_ai
 from live_odds_fetcher import (
     get_fetcher,
     SUPPORTED_LIVE_SITES,
+    SUPPORTED_SPORTS,
     API_AVAILABLE,
     API_IMPORT_ERROR,
     LIVE_FEEDS_ENABLED,
@@ -47,6 +48,21 @@ def get_supported_sites():
         'timestamp': datetime.now().isoformat()
     })
 
+@app.route('/api/sports')
+def get_supported_sports():
+    """Get all visible sports categories"""
+    site_id = request.args.get('site', 'sportybet')
+    if site_id not in SUPPORTED_LIVE_SITES:
+        return jsonify({'error': f'Unsupported site: {site_id}'}), 400
+
+    sports = fetcher.get_supported_sports(site_id)
+    return jsonify({
+        'sports': sports,
+        'default': 'football',
+        'count': len(sports),
+        'timestamp': datetime.now().isoformat()
+    })
+
 @app.route('/api/matches', methods=['POST'])
 def get_matches():
     """Fetch live matches and odds from selected site"""
@@ -58,23 +74,48 @@ def get_matches():
         # Validate site
         if site_id not in SUPPORTED_LIVE_SITES:
             return jsonify({'error': f'Unsupported site: {site_id}'}), 400
-        
-        matches = fetcher.fetch_live_odds(site_id, sport)
+
+        if sport not in SUPPORTED_SPORTS:
+            return jsonify({'error': f'Unsupported sport: {sport}'}), 400
+
         site_info = SUPPORTED_LIVE_SITES[site_id]
+        sport_info = SUPPORTED_SPORTS[sport]
+
+        if not sport_info.get('live_feed'):
+            return jsonify({
+                'site': site_id,
+                'site_name': site_info['name'],
+                'site_flag': site_info['flag'],
+                'sport': sport,
+                'sport_name': sport_info['name'],
+                'matches': [],
+                'count': 0,
+                'is_live_data': False,
+                'is_real_odds': False,
+                'data_source': 'unsupported',
+                'api_available': API_AVAILABLE and LIVE_FEEDS_ENABLED,
+                'message': f"{sport_info['name']} feed is not connected yet.",
+                'timestamp': datetime.now().isoformat()
+            })
+
+        matches = fetcher.fetch_live_odds(site_id, sport)
         first_match = matches[0] if matches else {}
         is_sample_data = bool(first_match.get('sample', False))
         is_stored_data = bool(first_match.get('from_storage', False))
-        is_live_data = LIVE_FEEDS_ENABLED and API_AVAILABLE and not is_sample_data and not is_stored_data
+        is_live_data = bool(matches) and LIVE_FEEDS_ENABLED and API_AVAILABLE and not is_sample_data and not is_stored_data
+        data_source = 'live' if is_live_data else 'stored' if is_stored_data else 'sample' if is_sample_data else 'empty'
         
         return jsonify({
             'site': site_id,
             'site_name': site_info['name'],
             'site_flag': site_info['flag'],
+            'sport': sport,
+            'sport_name': sport_info['name'],
             'matches': matches,
             'count': len(matches),
             'is_live_data': is_live_data,
             'is_real_odds': not is_sample_data,
-            'data_source': 'live' if is_live_data else 'stored' if is_stored_data else 'sample',
+            'data_source': data_source,
             'api_available': API_AVAILABLE and LIVE_FEEDS_ENABLED,
             'timestamp': datetime.now().isoformat()
         })

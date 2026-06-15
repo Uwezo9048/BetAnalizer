@@ -1,11 +1,15 @@
 let currentSite = 'sportybet';
+let currentSport = 'football';
 let currentMatches = [];
 let supportedSites = [];
+let supportedSports = [];
 
 const siteSearchInput = document.getElementById('siteSearchInput');
 const siteGrid = document.getElementById('siteGrid');
 const selectedSiteDisplay = document.getElementById('selectedSiteDisplay');
 const siteInfoText = document.getElementById('siteInfoText');
+const sportsGrid = document.getElementById('sportsGrid');
+const selectedSportBadge = document.getElementById('selectedSportBadge');
 const refreshBtn = document.getElementById('refreshBtn');
 const liveMatchesContainer = document.getElementById('liveMatchesContainer');
 const upcomingMatchesContainer = document.getElementById('upcomingMatchesContainer');
@@ -50,6 +54,7 @@ async function init() {
     setupEventListeners();
     await checkAPIStatus();
     await loadSupportedSites();
+    await loadSupportedSports();
     await loadMatches();
 }
 
@@ -116,6 +121,7 @@ async function selectSite(siteId) {
     siteSearchInput.value = site?.name || '';
     updateSelectedSiteDisplay();
     renderSites(supportedSites);
+    await loadSupportedSports();
     await loadMatches();
 }
 
@@ -144,6 +150,69 @@ function updateSelectedSiteDisplay() {
     siteInfoText.textContent = `${site.name} selected.`;
 }
 
+async function loadSupportedSports() {
+    if (!sportsGrid) return;
+
+    try {
+        const response = await fetch(`/api/sports?site=${encodeURIComponent(currentSite)}`);
+        const data = await response.json();
+
+        if (data.error) {
+            sportsGrid.innerHTML = `<div class="text-sm text-red-300">${escapeHtml(data.error)}</div>`;
+            return;
+        }
+
+        supportedSports = data.sports || [];
+        if (!supportedSports.some(sport => sport.id === currentSport && sport.enabled)) {
+            currentSport = data.default || 'football';
+        }
+        renderSports();
+        updateSelectedSportBadge();
+    } catch (error) {
+        console.error('Error loading sports:', error);
+        sportsGrid.innerHTML = '<div class="text-sm text-red-300">Could not load sports categories.</div>';
+    }
+}
+
+function renderSports() {
+    if (!sportsGrid) return;
+
+    if (!supportedSports.length) {
+        sportsGrid.innerHTML = '<div class="text-sm text-gray-400">No sports categories found.</div>';
+        return;
+    }
+
+    sportsGrid.innerHTML = supportedSports.map(sport => {
+        const countLabel = sport.stored_count > 0 ? ` (${sport.stored_count})` : '';
+        const disabled = !sport.enabled;
+        return `
+            <button type="button"
+                class="sport-card ${sport.id === currentSport ? 'active' : ''} ${disabled ? 'disabled' : ''}"
+                ${disabled ? 'disabled title="Feed not connected yet"' : `onclick="selectSport('${sport.id}')"`}>
+                <span class="sport-icon">${escapeHtml(sport.icon)}</span>
+                <span class="sport-name">${escapeHtml(sport.name)}${countLabel}</span>
+                ${disabled ? '<span class="sport-status">Soon</span>' : ''}
+            </button>
+        `;
+    }).join('');
+}
+
+async function selectSport(sportId) {
+    const sport = supportedSports.find(item => item.id === sportId);
+    if (!sport || !sport.enabled) return;
+
+    currentSport = sportId;
+    renderSports();
+    updateSelectedSportBadge();
+    await loadMatches();
+}
+
+function updateSelectedSportBadge() {
+    if (!selectedSportBadge) return;
+    const sport = supportedSports.find(item => item.id === currentSport) || { name: 'Football' };
+    selectedSportBadge.textContent = sport.name;
+}
+
 async function loadMatches() {
     liveMatchesContainer.innerHTML = '<div class="p-8 text-center"><div class="loading-spinner"></div><p class="text-gray-400 mt-2">Fetching live odds...</p></div>';
     upcomingMatchesContainer.innerHTML = '<div class="p-8 text-center"><div class="loading-spinner"></div><p class="text-gray-400 mt-2">Fetching upcoming matches...</p></div>';
@@ -152,7 +221,7 @@ async function loadMatches() {
         const response = await fetch('/api/matches', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ site: currentSite, sport: 'football' })
+            body: JSON.stringify({ site: currentSite, sport: currentSport })
         });
         const data = await response.json();
 
@@ -171,10 +240,13 @@ async function loadMatches() {
         const sourceLabels = {
             live: 'Live odds',
             stored: 'Stored odds',
-            sample: 'Sample data'
+            sample: 'Sample data',
+            empty: 'No matches',
+            unsupported: 'Feed not connected'
         };
-        matchesSourceText.textContent = `${data.site_name} - ${sourceLabels[data.data_source] || 'Sample data'}`;
-        upcomingSourceText.textContent = `${data.site_name} - not live yet`;
+        const sportName = data.sport_name || getCurrentSportName();
+        matchesSourceText.textContent = `${data.site_name} - ${sportName} - ${sourceLabels[data.data_source] || 'Sample data'}`;
+        upcomingSourceText.textContent = `${data.site_name} - ${sportName} - not live yet`;
 
         renderMatches(liveMatches, liveMatchesContainer, 'No live matches right now. Upcoming matches are listed below.');
         renderMatches(upcomingMatches, upcomingMatchesContainer, 'No upcoming matches available at this time.');
@@ -190,6 +262,10 @@ function isLiveMatch(match) {
     return Boolean(match.live && !match.from_storage && !match.sample);
 }
 
+function getCurrentSportName() {
+    return supportedSports.find(item => item.id === currentSport)?.name || 'Football';
+}
+
 function renderMatches(matches, container, emptyMessage) {
     if (!matches.length) {
         container.innerHTML = `<div class="p-8 text-center text-gray-400">${escapeHtml(emptyMessage)}</div>`;
@@ -202,7 +278,7 @@ function renderMatches(matches, container, emptyMessage) {
             <div class="flex flex-col sm:flex-row sm:justify-between sm:items-start gap-2 mb-3">
                 <div>
                     <div class="font-bold text-lg">${escapeHtml(match.home_team)} vs ${escapeHtml(match.away_team)}</div>
-                    <div class="text-xs text-gray-400">${escapeHtml(match.league || match.country || 'Football')}</div>
+                    <div class="text-xs text-gray-400">${escapeHtml(match.league || match.country || getCurrentSportName())}</div>
                 </div>
                 <div class="flex gap-2">
                     ${isLiveMatch(match) ? '<span class="bg-red-600/80 text-white text-xs px-2 py-1 rounded-full live-indicator">LIVE</span>' : '<span class="bg-blue-600/60 text-white text-xs px-2 py-1 rounded-full">Upcoming</span>'}
@@ -608,6 +684,7 @@ function escapeAttribute(value) {
 }
 
 window.selectSite = selectSite;
+window.selectSport = selectSport;
 window.analyzeMatch = analyzeMatch;
 
 init();
